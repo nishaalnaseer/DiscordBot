@@ -7,6 +7,8 @@ import os
 from datetime import datetime
 from datetime import timedelta
 
+version = 0.1
+
 
 def get_playlists():
     playlists = sp.user_playlists('31f34fv4orjls6i7vyc5dtr6ldoe')
