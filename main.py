@@ -2,62 +2,16 @@ import json
 from discord.ext import tasks
 import discord
 import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
-import os
-from datetime import datetime
-from datetime import timedelta
+import asyncio
+import time
+from threading import Thread
+from urllib.parse import urlparse
+from requests import get as http_get
 
-version = 0.1
+from guild import Guild
+import spotify
 
-
-def get_playlists():
-    playlists = sp.user_playlists('31f34fv4orjls6i7vyc5dtr6ldoe')
-    return playlists
-
-
-# "2FjwKUf69Fi67jED87dIMN" main playlist id
-def get_playlist_tracks(playlist_id):
-    """
-    get tracks in a playlist
-    returned format = {
-                            track_id: [added_at, added_by_id, track_name]
-                    }
-    """
-    info = {}
-    results = sp.playlist_items(playlist_id)
-    tracks = results['items']
-
-    # with open("temp.json", 'w') as f:
-    #     json.dump(results, f, indent=4)
-
-    while results['next']:
-        results = sp.next(results)
-        tracks.extend(results['items'])
-
-    # with open("temp2.json", 'w') as f: # debug
-    #     json.dump(tracks, f, indent=4) # debug
-    # print(f"track2len= ", len(tracks)) # debug
-
-    for track in tracks:
-        added_at = track["added_at"]
-        datetime_added_at = datetime.strptime(added_at, "%Y-%m-%dT%H:%M:%SZ")
-        time_adjusted = datetime_added_at + timedelta(hours=5)
-        time_adjusted_str = datetime.strftime(time_adjusted, "%Y-%m-%d %H:%M:%S")
-        added_by_id = collabs[track["added_by"]["id"]]
-        try:
-            track_id = track["track"]["id"]
-        except Exception as e:
-            string = f"{datetime.now}: e\n"
-            with open("logs.txt", 'a') as f:
-                f.write(string)
-        track_name = track["track"]["name"]
-        info.update(
-            {
-                track_id: [time_adjusted_str, added_by_id, track_name]
-            }
-        )
-
-    return info
+version = 0.2
 
 
 def diff_string(playlist_a: dict, playlist_b: dict, char: str) -> str:
@@ -84,232 +38,692 @@ def diff_string_plus_minus(playlist_a: dict, playlist_b: dict) -> str:
     return string
 
 
-async def monitor(message):
-    global MONITOR, MONITOR_NUM
+def load_savefile_to_hm():
+    while True:
+        if not save_file:
+            with open("guilds.json", 'r') as f:
+                servers = json.load(f)
+            break
 
-    content = message.content
+        time.sleep(2)
+
+    for server_id, server in servers.items():
+        guild = Guild(server_id)
+        guild.initialised = server["initialised"]
+        guild.background_task_channel = server["background_task_channel"]
+        guild.spotify_playlist = server["spotify_playlist"]
+        guild.steam_market_watchdog = server["steam_market_watchdog"]
+        guild.steam_market_watchdog_limit = server["steam_market_watchdog_limit"]
+
+        guilds.update({server_id: guild})
+        guild.init_tracks(spotify)
+
+
+async def send_channel(channel, string):
+    await channel.send(f"```{string}```")
+
+
+def save_hm_to_file():
+    global save_file
+
+    while True:
+        if save_file:
+            save_hm = {}
+
+            for guild_id in guilds:
+                guild = guilds[guild_id]
+
+                save_hm.update(
+                    {
+                        guild_id: {
+                            "server_id": guild.server_id,
+                            "initialised": guild.initialised,
+                            "background_task_channel": guild.background_task_channel,
+                            "spotify_playlist": guild.spotify_playlist,
+                            "steam_market_watchdog": guild.steam_market_watchdog,
+                            "steam_market_watchdog_limit": guild.steam_market_watchdog_limit
+                        }
+                    }
+                )
+
+            with open("guilds.json", 'w') as f:
+                json.dump(save_hm, f, indent=4)
+
+            save_file = False
+
+        time.sleep(2)
+
+
+async def message_event_loop(server_id, message):
+    start = time.time()
+    guild = guilds[server_id]
+    guild.at_task_message = ""
+
+    while True:
+        if time.time() - start > 30:
+            return True
+
+        if guild.at_task_message != "":
+            if guild.at_task_message.channel.id == message.channel.id \
+                    and guild.at_task_message.author.id == message.author.id:
+                guild.message_received = True
+            else:
+                guild.message_received = False
+                guild.at_task_message = ""
+                await asyncio.sleep(1)
+                continue
+
+        await asyncio.sleep(1)
+        if guild.message_received:
+            guild.message_received = False
+            return False
+
+
+async def ask_spotify_playlist(server_id, message):
+    global save_file
+    guild = guilds[server_id]
+    guild.at_task = True
+    guild.at_task_message = ""
+    await send_channel(message.channel, "Please enter your spotify playlist link and make sure its not "
+                                        "private.\nPlease respond in 30 seconds.")
+    timed_out = await message_event_loop(server_id, message)
+
+    if timed_out:
+        guild.at_task = False
+        await send_channel(message.channel, "Operation aborted")
+        return
+
+    url = guild.at_task_message.content
+    try:
+        parsed = urlparse(url)
+        path = parsed.path
+        playlist_id = path[10:]
+        name = spotify.sp.playlist(playlist_id="2FjwKUf69Fi67jED87dIMN")["name"]
+        playlist = spotify.get_playlist_tracks(playlist_id)
+    except spotipy.exceptions.SpotifyException as e:
+        await send_channel(message.channel, "Incorrect playlist url")
+        guild.at_task = False
+        return
+    except Exception:
+        await send_channel(message.channel, "If you have entered the correct url contact bot admin, else enter the "
+                                            "correct url")
+        guild.at_task = False
+        return
+
+    string = f"Is this your playlist?\nPlaylist Name: {name}\n"
+    if len(playlist) == 0:
+        string += "There are no items in your playlist"
+    else:
+        i = 0
+        for track_id in playlist:
+            track = playlist[track_id]
+            added_at, added_by_id, track_name = track[0], track[1], track[2]
+            string += f"{i}. {track_name} - Added by {added_by_id} at {added_at}\n"
+
+            i += 1
+            if i == 5:
+                break
+
+    string += "Are you sure you want to continue with this playlist? '//yes'"
+    try:
+        await send_channel(message.channel, string)
+    except discord.errors.HTTPException as e:
+        print(string)
+        print(e)
+
+    timed_out = await message_event_loop(server_id, message)
+    if timed_out:
+        guild.at_task = False
+        await send_channel(message.channel, "Operation aborted due to time out.")
+        return
+
+    if str(guild.at_task_message.content) == "//yes":
+        guild.spotify_playlist = playlist_id
+        save_file = True
+        await send_channel(message.channel, "Your preferences have been saved!")
+    else:
+        await send_channel(message.channel, "Operation aborted!")
+
+    guild.at_task = False
+    return
+
+
+async def init(message):
+    global guilds, save_file
+    server_id = str(message.guild.id)
+    guild = guilds[server_id]
+    guild.at_task = True
+
+    guild.at_task_message = ""
+    guild.message_received = False
+
+    await send_channel(message.channel, "Do you wish to use this channel for background tasks? ('//yes')\nPlease "
+                                        "respond in 30 seconds.")
+
+    timed_out = await message_event_loop(server_id, message)
+
+    if timed_out:
+        guild.at_task = False
+        await send_channel(message.channel, "Operation aborted")
+        return
+
+    if str(guild.at_task_message.content).lower() == "//yes":
+        guild.at_task_message = ""
+        guild.initialised = True
+        guild.background_task_channel = message.channel.id
+        guild.at_task = True
+
+        save_file = True
+
+        await send_channel(message.channel, "Your preferences have been saved!\nDo you also wish to add spotify "
+                                            "playlist for monitoring? '//yes'")
+
+        timed_out = await message_event_loop(server_id, message)
+        if timed_out:
+            guild.at_task = False
+            await send_channel(message.channel, "Operation aborted")
+            return
+
+        if str(guild.at_task_message.content).lower() == "//yes":
+            await ask_spotify_playlist(server_id, message)
+    else:
+        await send_channel(message.channel, "Operation aborted!")
+
+    guild.at_task = False
+
+
+async def admin_interface(message):
+    content = str(message.content)
+    global guilds, save_file
+
     args = content.split(" ")
-    if len(args) != 2:
-        await message.channel.send(f"```Number of arguments should be 2.```")
+    try:
+        args0 = args[0]
+        args1 = args[1]
+        if args0 == "//add_server":
+            server_id = args1
+
+            guild = Guild(server_id)
+            guilds.update({server_id: guild})
+
+            save_file = True
+
+            await send_channel(message.channel, "Your changes have been saved")
+
+        elif args0 == "//remove_server":
+            server_id = args1
+
+            with open("guilds.json", 'r') as f:
+                servers = json.load(f)
+
+            servers.pop(server_id)
+            with open("guilds.json", 'w') as f:
+                json.dump(servers, f, indent=4)
+
+            guilds.pop(server_id)
+            await send_channel(message.channel, "Your changes have been saved")
+
+        elif args0 == "//change_steam_limit":
+            await set_watchdog_limit(message)
+
+    except Exception as e:
+        await send_channel(message.channel, e)
+
+
+async def diff(server_id, message):
+    guild = guilds[server_id]
+
+    raw_playlist = spotify.get_playlist_tracks(guild.spotify_playlist)
+    playlist_name = spotify.sp.playlist(guild.spotify_playlist)["name"]
+
+    string = f"Playlist: {playlist_name}\n\n"
+    temp_string = diff_string_plus_minus(raw_playlist, guild.saved_tracks)
+
+    if len(temp_string) == 0:
+        string += "No changes"
+    else:
+        string += temp_string
+        guild.saved_tracks = raw_playlist
+
+    await send_channel(message.channel, string)
+
+
+def get_api_url(appid, hash_name):
+    url = f"https://steamcommunity.com/market/priceoverview/?appid={appid}&market_hash_name={hash_name}&currency=1"
+    return url
+
+
+async def validate_url(server_id, message):
+    global save_file
+
+    content = str(message.content).split(" ")
+
+    if len(content) != 3:
+        await send_channel(message.channel, "You must enter '//add_steam_item {limit} {url}'.\nLimit is the median "
+                                            "price in dollars where you will be informed.")
         return
 
+    limit = content[1]
     try:
-        num = int(args[1])
+        limit = float(limit)
     except ValueError:
-        await message.channel.send(f"```Please enter an integer for arg2```")
+        await send_channel(message.channel, "Please enter a valid limit.")
         return
 
-    playlists = get_playlists()
-    items = playlists["items"]
+    url = content[2]
 
-    try:
-        playlist = items[num]
-    except IndexError:
-        await message.channel.send(f"```Index out of bounds```")
-        return
-    
-    
-    MONITOR_NUM = num
-    name = playlist["name"]
+    url_parsed = urlparse(url)
+    urlpath = url_parsed.path
 
-    if MONITOR:
-        await message.channel.send(f"```Already monitoring {name}```")
+    if url_parsed.netloc != "steamcommunity.com" and urlpath[:17] != "/market/listings/":
+        await send_channel(message.channel, "Please enter a valid URL!")
         return
 
-    MONITOR = True
-
-    await message.channel.send(f"```Monitoring {name}```")
-
-
-async def stop(message):
-    global MONITOR, MONITOR_NUM
-    if not MONITOR:
-        await message.channel.send(f"```Monitoring already paused```")
-        return
-
-    MONITOR_NUM = 0
-    MONITOR = False
-
-    await message.channel.send(f"```Pausing Monitoring```")
+    url_content = urlpath.split("/")
+    app_id = int(url_content[-2])
+    hash_name = url_content[-1]
+    return [app_id, limit, hash_name, url]
 
 
-async def list_playlists(message):
-    playlists = get_playlists()
-    string = ""
-    total = playlists["total"]
-    items = playlists["items"]
-    if items == 0:
-        return "No playlists"
+async def update_steam(server_id, message):
+    global save_file
 
-    string += f"Number of playlists: {total}\n"
+    guild = guilds[server_id]
+    guild.at_task = True
 
-    for index, i in enumerate(items):
-        name = i["name"]
-        count = i["tracks"]["total"]
-        playlist_id = i["id"]
-        string += f"{index}: {name} - songs: {count}\n"
-    string += "\nSelect index to monitor or diff playlist.'"
+    while True:
+        # url validation
+        await send_channel(message.channel, "Please enter a valid steam market URL below!")
+        timed_out = await message_event_loop(server_id, message)
 
-    await message.channel.send(f"```{string}```")
+        if timed_out:
+            guild.at_task = False
+            await send_channel(message.channel, "Operation aborted due to timeout!")
+            return
 
+        url = str(guild.at_task_message.content)
 
-async def diff(message, save=True):
-    content = message.content
+        url_parsed = urlparse(url)
+        urlpath = url_parsed.path
+        if url_parsed.netloc != "steamcommunity.com" and urlpath[:17] != "/market/listings/":
+            await send_channel(message.channel, "Invalid URL!")
+            continue
+        url_content = urlpath.split("/")
+        app_id = int(url_content[-2])
+        hash_name = url_content[-1]
 
-    args = content.split(" ")
-    if len(args) != 2:
-        await message.channel.send(f"```Number of arguments should be 2.```")
-        return
+        api_url = get_api_url(app_id, hash_name)
+        response = http_get(api_url)
 
-    try:
-        num = int(args[1])
-    except ValueError:
-        await message.channel.send(f"```Please enter an integer for arg2```")
-        return
+        if response.status_code != 200:
+            await send_channel(message.channel, f"Invalid  URL! Reason: {response.reason}")
+            continue
+        break
 
-    playlists = get_playlists()
-    items = playlists["items"]
+    current_item_details = response.json()
+    current_price_str: str = current_item_details["median_price"]
+    current_price: float = float(current_price_str.replace("$", ""))
 
-    try:
-        playlist = items[num]
-    except IndexError:
-        await message.channel.send(f"```Index out of bounds```")
-        return
+    while True:
+        # limit validation
+        await send_channel(message.channel, f"Enter a limit for when you want to be informed of")
+        timed_out = await message_event_loop(server_id, message)
 
-    playlist_id = playlist["id"]
-    name = playlist["name"]
-    tracks = get_playlist_tracks(playlist_id)
+        if timed_out:
+            guild.at_task = False
+            await send_channel(message.channel, "Operation aborted due to timeout!")
+            return
 
-    string = "Showing the diff file, compared to the previously saved playlist.\n"
-    string += f"Playlist name: {name}, id: {playlist_id}\n\n"
+        try:
+            limit: float = float(guild.at_task_message.content)
+        except ValueError:
+            await send_channel(message.channel, f"Please enter a valid float")
+            continue
+        break
 
-    with open("saved_playlists.json", 'r') as f:
-        saved_playlists = json.load(f)
+    while True:
+        # getting the boolean operator sign
+        await send_channel(message.channel, f"When you want to be informed, do you want the limit to me lower or "
+                                            f"greater than the current price? Current median price = "
+                                            f"{current_price_str} ('g'/'l') Enter 'e' to exit")
+        timed_out = await message_event_loop(server_id, message)
 
-    try:
-        saved_tracks = saved_playlists[playlist_id]
-    except KeyError:
-        saved_tracks = {}
+        if timed_out:
+            guild.at_task = False
+            await send_channel(message.channel, "Operation aborted due to timeout!")
+            return
 
-    temp_string = diff_string_plus_minus(tracks, saved_tracks)
-    if temp_string == "":
-        string += "No diff\n"
-    string += temp_string
+        comparison_type = str(guild.at_task_message.content).lower()
+        if comparison_type == "e":
+            guild.at_task = False
+            await send_channel(message.channel, "Operation aborted!")
+            return
 
-    if save:
-        saved_playlists.update({playlist_id: tracks})
-        with open("saved_playlists.json", 'w') as f:
-            json.dump(saved_playlists, f, indent=4)
+        if comparison_type != "g" and comparison_type != "l":
+            await send_channel(message.channel, "Invalid selection")
+            continue
 
-        await message.channel.send(f"```{string}```")
+        if comparison_type == "g" and limit < current_price:
+            await send_channel(message.channel, "Are you sure? Current median price already exceeds your limit. ("
+                                                "'y')")
 
+            timed_out = await message_event_loop(server_id, message)
 
-async def help_func(message):
-    string = "Hello, enter /help for this prompt. '/list' to list playlists and afterwards you can use f'/diff " \
-             "index_from_list' to get the diff of current playlist and its previously saved file, use '/monitor " \
-             "index_from_list' to monitor for changes in playlist."
-
-    await message.channel.send(f"```{string}```")
-
-
-class MyClient(discord.Client):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-        playlists = get_playlists()["items"]
-        playlist_id = playlists[MONITOR_NUM]["id"]
-        self.tracks = get_playlist_tracks(playlist_id)
-        self.saved_num = MONITOR_NUM
-
-
-        @self.event
-        async def on_message(message):
-            # Make sure bot doesn't get stuck in an infinite loop
-            if message.author == client.user or message.channel.id != 1043577355328835584:
+            if timed_out:
+                guild.at_task = False
+                await send_channel(message.channel, "Operation aborted due to timeout!")
                 return
 
-            # Get data about the user
-            username = str(message.author)
-            user_message = str(message.content)
-            channel = str(message.channel)
+            if str(guild.at_task_message.content) != "y":
+                continue
 
-            print(f"{username} said {user_message} on {channel}")
+        elif comparison_type == "l" and limit > current_price:
+            await send_channel(message.channel, "Are you sure? Your limit already exceeds the current median price. ("
+                                                "'y')")
 
-            arguments = user_message.split(" ")
-            try:
-                function = functions[arguments[0]]
-                await function(message)
-            except KeyError:
-                # await message.channel.send("hi there")
-                pass
+            timed_out = await message_event_loop(server_id, message)
 
-            # send_clients(f"{username} said {user_message} on {channel}")
-            # await send_message(message, user_message)
+            if timed_out:
+                guild.at_task = False
+                await send_channel(message.channel, "Operation aborted due to timeout!")
+                return
 
-        # an attribute we can access from our task
-        self.counter = 0
+            if str(guild.at_task_message.content) != "y":
+                continue
 
-    async def setup_hook(self) -> None:
-        # start the task to run in the background
-        self.my_background_task.start()
+        break
 
-    async def on_ready(self):
-        print(f'Logged in as {self.user} (ID: {self.user.id})')
-        print('------')
+    if comparison_type == "l":
+        sign = ">"
+    elif comparison_type == "g":
+        sign = "<"
+    else:
+        await send_channel(message.channel, "Unexpected error")
+        guild.at_task = False
+        return
+
+    string = f"So you want to be informed of when {limit} {sign} current_median_price\nEnter 'y' if you want these " \
+             f"instructions to be recorded!"
+
+    await send_channel(message.channel, string)
+
+    timed_out = await message_event_loop(server_id, message)
+
+    if timed_out:
+        guild.at_task = False
+        await send_channel(message.channel, "Operation aborted due to timeout!")
+        return
+
+    if str(guild.at_task_message.content) != "y":
+        guild.at_task = False
+        await send_channel(message.channel, "Operation aborted!")
+        return
+
+    try:
+        guild.steam_market_watchdog[url]
+    except KeyError:
+        if len(guild.steam_market_watchdog) > guild.steam_market_watchdog_limit:
+            await send_channel(message.channel, "No more items can be added to WatchDog as the watch limit has been "
+                                                "reached!")
+            guild.at_task = False
+            return
+
+    guild.steam_market_watchdog.update({
+        url: [app_id, limit, hash_name, sign]
+    })
+    save_file = True
+    await send_channel(message.channel, "Your changes have been saved!")
+
+    guild.at_task = False
+    return
+
+
+async def set_watchdog_limit(message):
+    global save_file
+
+    args = str(message.content).split(" ")
+    num = int(args[1])
+    server_id = args[2]
+
+    guild = guilds[server_id]
+    guild.steam_market_watchdog_limit = num
+
+    save_file = True
+
+    await send_channel(message.channel, "Limit changed")
+
+
+async def remove_steam(server_id, message):
+    global save_file
+
+    guild = guilds[server_id]
+
+    args = message.content.split(" ")
+    if len(args) != 2:
+        await send_channel(message.channel, "Please enter '//remove_steam_item' followed by items url")
+        return
+
+    url = args[1]
+    url_parsed = urlparse(url)
+    urlpath = url_parsed.path
+
+    if url_parsed.netloc != "steamcommunity.com" and urlpath[:17] != "/market/listings/":
+        await send_channel(message.channel, "Please enter a valid URL!")
+        return
+
+    url_content = urlpath.split("/")
+    app_id = int(url_content[-2])
+    hash_name = url_content[-1]
+
+    try:
+        guild.steam_market_watchdog[url]
+    except KeyError:
+        await send_channel(message.channel, "Item not added to steam watchdog!")
+        return
+
+    test_url = get_api_url(app_id, hash_name)
+    response = http_get(test_url)
+
+    if response.reason != "OK":
+        await send_channel(message.channel, "Please enter a valid URL!")
+        return
+
+    guild.steam_market_watchdog.pop(url)
+
+    save_file = True
+
+    formatted_name = hash_name.replace("%20", " ")
+    await send_channel(message.channel, f"'{formatted_name}' has been removed from steam watchdog")
+    return
+
+
+async def list_watchdog(server_id, message):
+    guild = guilds[server_id]
+    string = ""
+    for item in guild.steam_market_watchdog:
+        item_details = guild.steam_market_watchdog[item]
+        app_id = item_details[0]
+        limit = item_details[1]
+        hash_name = item_details[2]
+
+        url = get_api_url(app_id, hash_name)
+
+        steam_raw_data = http_get(url)
+        steam_data = steam_raw_data.json()
+        price = steam_data["median_price"]
+        hash_name = hash_name.replace("%20", " ")
+
+        string += f"Name: {hash_name} - app_id: {app_id} - limit: {limit} - current median price: {price} - url: {item}\n"
+
+    if string == "":
+        await send_channel(message.channel, "Empty list here")
+        return None
+
+    await send_channel(message.channel, string)
+
+
+async def watchdog(client):
+    for guild_id in guilds:
+        guild = guilds[guild_id]
+        channel_id = guild.background_task_channel
+        channel = client.get_channel(channel_id)
+
+        listings = guild.steam_market_watchdog
+        for url in listings:
+            details = listings[url]
+            app_id = details[0]
+            limit = details[1]
+            hash_name = details[3]
+            sign = details[4]
+
+            api_url = get_api_url(app_id, hash_name)
+            current_details = http_get(api_url).json()
+            current_price_str = current_details["median_price"]
+            current_price: float = float(current_price_str.replace("$", ""))
+
+            conditional = exec(f"{current_price} {sign} {limit}")
+            if conditional:
+                hash_name_formatted = hash_name.replace("%20", "")
+                await send_channel(channel, f"{hash_name_formatted} has reached {current_price_str}")
+
+
+def run_bot(discord_token):
+    client = discord.Client(intents=discord.Intents.all())
+    global guilds
+
+    @client.event
+    async def on_message(message):
+        global guilds
+        # Make sure bot doesn't get stuck in an infinite loop
+
+        content = message.content
+        author = message.author
+
+        channel = message.channel
+        print(f"{author} said {content} on {channel}")
+
+        if client.user == author:
+            return
+
+        if message.author.id == 260450479278915585 and message.channel.id == 1053933250143326269:
+            await admin_interface(message)
+            return
+
+        try:
+            server_id = str(message.guild.id)
+        except AttributeError:
+            return
+
+        try:
+            guild = guilds[server_id]
+        except KeyError:
+            await send_channel(message.channel, f"Server {server_id} not supported, please contact bot devs!")
+            return
+
+        if guild.at_task:
+            guild.at_task_message = message
+            guild.message_received = True
+            return
+
+        if content[:2] != "//":
+            return
+
+        if not guild.initialised and content != "//init":
+            await send_channel(message.channel, f"Please type '//init' and start initialising to set up a channel"
+                                                f" for background tasks")
+            return
+
+        args = content.split(" ")
+        if len(args) == 0:
+            return
+
+        arg1 = args[0]
+        try:
+            if arg1 == "//init":
+                await init(message)
+            elif arg1 == "//reset_playlist":
+                await ask_spotify_playlist(server_id, message)
+            elif arg1 == "//diff":
+                await diff(server_id, message)
+            elif arg1 == "//update_steam_item":
+                await update_steam(server_id, message)
+            elif arg1 == "//remove_steam_item":
+                await remove_steam(server_id, message)
+            elif arg1 == "//list_watchdog":
+                await list_watchdog(server_id, message)
+        except Exception as e:
+            channel = client.get_channel(1053933250143326269)
+            await send_channel(channel, f"Exception {e} at server {server_id}")
+
+        return
 
     @tasks.loop(seconds=15)  # task runs every 15 seconds
-    async def my_background_task(self):
-        channel = self.get_channel(1043577355328835584)  # channel ID goes here
+    async def my_background_task():
+        for guild_id in guilds:
+            guild = guilds[guild_id]
+            channel = client.get_channel(guild.background_task_channel)
 
-        playlists = get_playlists()["items"]
-        playlist = playlists[MONITOR_NUM]
-        playlist_id = playlist["id"]
-        name = playlist["name"]
-        tracks = get_playlist_tracks(playlist_id)
+            string = ""
+            raw_playlist = spotify.get_playlist_tracks(guild.spotify_playlist)
 
-        if MONITOR:
-            if self.saved_num != MONITOR_NUM:
-                self.saved_num = MONITOR_NUM
-                self.tracks = tracks
-                return
-            else:
-                # string = "Detected a change in a playlist.\n"
-                # string += f"Playlist name: {name}, id: {playlist_id}\n\n"
-                temp_string = diff_string_plus_minus(tracks, self.tracks)
-                if temp_string != "":
-                    self.tracks = tracks
-                    await channel.send(f"```{temp_string}```")
+            string += diff_string_plus_minus(raw_playlist, guild.temp_saved_tracks)
+
+            if string == "":
+                continue
+
+            guild.temp_saved_tracks = raw_playlist
+            await send_channel(channel, string)
+
+    @tasks.loop(seconds=3600)
+    async def hourly_task():
+        pass
 
     @my_background_task.before_loop
-    async def before_my_task(self):
-        await self.wait_until_ready()  # wait until the bot logs in
+    @hourly_task.before_loop
+    async def before_my_task():
+        await client.wait_until_ready()  # wait until the bot logs in
+
+    @client.event
+    async def on_ready():
+        my_background_task.start()  # start the task to run in the background
+        hourly_task.start()
+
+        print(f'Logged in as {client.user}')
+        print('------')
+
+    client.run(discord_token)
 
 
-if __name__ == '__main__':
-    os.environ["SPOTIPY_CLIENT_ID"] = "fb294266f2a7483e8c3b40e8dc952ff5"
-    os.environ["SPOTIPY_CLIENT_SECRET"] = "f51dc791afc04dd18211ad776e8b500d"
-
-    auth_manager = SpotifyClientCredentials()
-    sp = spotipy.Spotify(auth_manager=auth_manager)
-
-    with open("users.json", 'r') as f:
-        collabs = json.load(f)
-
-    MONITOR = False
-    MONITORED = []
-    MONITOR_NUM = 0
+def main():
+    global guilds
     with open("config.json", 'r') as f:
         config = json.load(f)
 
-    wait_duration = config["monitoring"]
+    thread = Thread(target=save_hm_to_file)
+    thread.start()
 
-    functions = {
-        "/monitor": monitor,
-        "/list": list_playlists,
-        "/diff": diff,
-        "/stop": stop,
-        "/help": help_func
-    }
+    dev = config["dev"]
+    if dev:
+        discord_token = config["discord_token_dev"]
+    else:
+        discord_token = config["discord_token_prod"]
 
-    client = MyClient(intents=discord.Intents.all())
-    client.run(config["token"])
+    load_savefile_to_hm()
+    for guild_id in guilds:
+        guild = guilds[guild_id]
+        raw_playlist = spotify.get_playlist_tracks(guild.spotify_playlist)
+        guild.temp_saved_tracks = raw_playlist
+
+    run_bot(discord_token)
+
+
+if __name__ == '__main__':
+    guilds = {}
+    with open("users.json", 'r') as f:
+        collabs = json.load(f)
+
+    save_file = False
+
+    spotify = spotify.Spotify()
+
+    main()
