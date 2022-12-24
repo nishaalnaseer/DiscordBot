@@ -56,6 +56,7 @@ def load_savefile_to_hm():
         guild.steam_market_watchdog = server["steam_market_watchdog"]
         guild.steam_market_watchdog_limit = server["steam_market_watchdog_limit"]
         guild.users = server["users"]
+        guild.saved_tracks = server["tracks"]
 
         guilds.update({server_id: guild})
         guild.init_tracks(spotify)
@@ -88,7 +89,8 @@ def save_hm_to_file():
                             "spotify_playlist": guild.spotify_playlist,
                             "steam_market_watchdog": guild.steam_market_watchdog,
                             "steam_market_watchdog_limit": guild.steam_market_watchdog_limit,
-                            "users": guild.users
+                            "users": guild.users,
+                            "tracks": guild.saved_tracks
                         }
                     }
                 )
@@ -293,6 +295,8 @@ async def admin_interface(message):
 
 async def diff(server_id, message):
     """send the difference between saved track and current playlist"""
+    global save_file
+
     guild = guilds[server_id]
 
     raw_playlist = spotify.get_playlist_tracks(guild.spotify_playlist, guild.users)
@@ -306,6 +310,8 @@ async def diff(server_id, message):
     else:
         string += temp_string
         guild.saved_tracks = raw_playlist
+
+    save_file = True
 
     await send_channel(message.channel, string)
 
@@ -772,12 +778,9 @@ def main():
 
 
 if __name__ == '__main__':
+    # global vars
     guilds = {}
-    with open("users.json", 'r') as f:
-        collabs = json.load(f)
-
     save_file = False
-
     spotify = spotify.Spotify()
 
     main()
