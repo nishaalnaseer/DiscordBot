@@ -39,6 +39,7 @@ def diff_string_plus_minus(playlist_a: dict, playlist_b: dict) -> str:
 
 
 def load_savefile_to_hm():
+    """load saved guild data to memory"""
     while True:
         if not save_file:
             with open("guilds.json", 'r') as f:
@@ -54,6 +55,7 @@ def load_savefile_to_hm():
         guild.spotify_playlist = server["spotify_playlist"]
         guild.steam_market_watchdog = server["steam_market_watchdog"]
         guild.steam_market_watchdog_limit = server["steam_market_watchdog_limit"]
+        guild.users = server["users"]
 
         guilds.update({server_id: guild})
         guild.init_tracks(spotify)
@@ -64,6 +66,10 @@ async def send_channel(channel, string):
 
 
 def save_hm_to_file():
+    """
+    this is the file that saves guild data in dict to disk and it is running at all times on a
+    different thread. when bool save_file is true contents in dict is saved to disk
+    """
     global save_file
 
     while True:
@@ -81,7 +87,8 @@ def save_hm_to_file():
                             "background_task_channel": guild.background_task_channel,
                             "spotify_playlist": guild.spotify_playlist,
                             "steam_market_watchdog": guild.steam_market_watchdog,
-                            "steam_market_watchdog_limit": guild.steam_market_watchdog_limit
+                            "steam_market_watchdog_limit": guild.steam_market_watchdog_limit,
+                            "users": guild.users
                         }
                     }
                 )
@@ -95,6 +102,8 @@ def save_hm_to_file():
 
 
 async def message_event_loop(server_id, message):
+    """a function to detect if a the user has replied within a given time
+    this is used while thee bot is in conversation with a user"""
     start = time.time()
     guild = guilds[server_id]
     guild.at_task_message = ""
@@ -120,6 +129,7 @@ async def message_event_loop(server_id, message):
 
 
 async def ask_spotify_playlist(server_id, message):
+    """conversation where the bot asks for the spotify playlist url, verifies it and saves it to disk"""
     global save_file
     guild = guilds[server_id]
     guild.at_task = True
@@ -189,6 +199,9 @@ async def ask_spotify_playlist(server_id, message):
 
 
 async def init(message):
+    """conversation between the bot and a user where the bot asks to confirm if current dicord
+    channel is the channel for background tasks, this is where steam watchdog and spotify monitor
+     function will reply to"""
     global guilds, save_file
     server_id = str(message.guild.id)
     guild = guilds[server_id]
@@ -233,6 +246,9 @@ async def init(message):
 
 
 async def admin_interface(message):
+    """this is hardcoded for a single user
+    here admin can add servers for them to be able to access the bots features
+    """
     content = str(message.content)
     global guilds, save_file
 
@@ -266,14 +282,20 @@ async def admin_interface(message):
         elif args0 == "//change_steam_limit":
             await set_watchdog_limit(message)
 
+        elif args0 == "//help":
+            string = "//add_server {server_id}\n//remove_server {server_id}\n//change_steam_limit {new_limit}"
+            await send_channel(message.channel, string)
+            return
+
     except Exception as e:
         await send_channel(message.channel, e)
 
 
 async def diff(server_id, message):
+    """send the difference between saved track and current playlist"""
     guild = guilds[server_id]
 
-    raw_playlist = spotify.get_playlist_tracks(guild.spotify_playlist)
+    raw_playlist = spotify.get_playlist_tracks(guild.spotify_playlist, guild.users)
     playlist_name = spotify.sp.playlist(guild.spotify_playlist)["name"]
 
     string = f"Playlist: {playlist_name}\n\n"
@@ -289,43 +311,14 @@ async def diff(server_id, message):
 
 
 def get_api_url(appid, hash_name):
-    url = f"https://steamcommunity.com/market/priceoverview/?appid={appid}&market_hash_name={hash_name}&currency=1"
+    """turns a steam app_id an item hash_name into a url that returns a json obj"""
+    url = f"https://steamcommunity.com/market/priceoverview/?appid={appid}" \
+          f"&market_hash_name={hash_name}&currency=1"
     return url
 
 
-async def validate_url(server_id, message):
-    global save_file
-
-    content = str(message.content).split(" ")
-
-    if len(content) != 3:
-        await send_channel(message.channel, "You must enter '//add_steam_item {limit} {url}'.\nLimit is the median "
-                                            "price in dollars where you will be informed.")
-        return
-
-    limit = content[1]
-    try:
-        limit = float(limit)
-    except ValueError:
-        await send_channel(message.channel, "Please enter a valid limit.")
-        return
-
-    url = content[2]
-
-    url_parsed = urlparse(url)
-    urlpath = url_parsed.path
-
-    if url_parsed.netloc != "steamcommunity.com" and urlpath[:17] != "/market/listings/":
-        await send_channel(message.channel, "Please enter a valid URL!")
-        return
-
-    url_content = urlpath.split("/")
-    app_id = int(url_content[-2])
-    hash_name = url_content[-1]
-    return [app_id, limit, hash_name, url]
-
-
 async def update_steam(server_id, message):
+    """conversation between useer and bot where the user adds or updates item in steam watch dog"""
     global save_file
 
     guild = guilds[server_id]
@@ -479,6 +472,7 @@ async def update_steam(server_id, message):
 
 
 async def set_watchdog_limit(message):
+    """admin function where admin can set the limit of watchdog for server"""
     global save_file
 
     args = str(message.content).split(" ")
@@ -494,6 +488,7 @@ async def set_watchdog_limit(message):
 
 
 async def remove_steam(server_id, message):
+    """removes steam item takes url as an additional argument"""
     global save_file
 
     guild = guilds[server_id]
@@ -538,6 +533,7 @@ async def remove_steam(server_id, message):
 
 
 async def list_watchdog(server_id, message):
+    """returns a list of the listings currently in steam watchdog"""
     guild = guilds[server_id]
     string = ""
     for item in guild.steam_market_watchdog:
@@ -563,6 +559,8 @@ async def list_watchdog(server_id, message):
 
 
 async def watchdog(client):
+    """background function for watch dog, checks if the limit of listings have been reached and if so informs
+    through the background channel"""
     for guild_id in guilds:
         guild = guilds[guild_id]
         channel_id = guild.background_task_channel
@@ -587,7 +585,50 @@ async def watchdog(client):
                 await send_channel(channel, f"{hash_name_formatted} has reached {current_price_str}")
 
 
+async def add_user(server_id, message):
+    """a conversation where users add user ids to the bot, this helps in showing a known alias when returning
+    differences in spotify playlists"""
+    global save_file
+
+    guild = guilds[server_id]
+    guild.at_task = True
+    await send_channel(message.channel, "Enter user_id below")
+    timed_out = await message_event_loop(server_id, message)
+
+    if timed_out:
+        guild.at_task = False
+        await send_channel(message.channel, "Operation aborted due to time out")
+        return
+
+    user_id = str(guild.at_task_message.content)
+
+    try:
+        # user_id validation
+        spotify.sp.user_playlists(user_id)
+    except spotipy.exceptions.SpotifyException:
+        await send_channel(message.channel, "Invalid user_id")
+        guild.at_task = False
+        return
+
+    await send_channel(message.channel, "Enter user alias")
+    timed_out = await message_event_loop(server_id, message)
+
+    if timed_out:
+        guild.at_task = False
+        await send_channel(message.channel, "Operation aborted due to time out")
+        return
+
+    alias = str(guild.at_task_message.content)
+    guild.users.update({user_id: alias})
+    save_file = True
+
+    guild.at_task = False
+    await send_channel(message.channel, "Your preferences have been saved")
+    return
+
+
 def run_bot(discord_token):
+    """main function of dicord.py"""
     client = discord.Client(intents=discord.Intents.all())
     global guilds
 
@@ -641,7 +682,7 @@ def run_bot(discord_token):
         try:
             if arg1 == "//init":
                 await init(message)
-            elif arg1 == "//reset_playlist":
+            elif arg1 == "//set_playlist":
                 await ask_spotify_playlist(server_id, message)
             elif arg1 == "//diff":
                 await diff(server_id, message)
@@ -651,6 +692,19 @@ def run_bot(discord_token):
                 await remove_steam(server_id, message)
             elif arg1 == "//list_watchdog":
                 await list_watchdog(server_id, message)
+            elif arg1 == "//add_sp_alias":
+                await add_user(server_id, message)
+            elif arg1 == "//help":
+                string = "Functions:\n\t1. //init to setup a background channel for wacthdog and monitoring " \
+                         "functions.\n\t2. //set_playlist to setup playlist for monitoring, and if you want you can " \
+                         "call diff to show the difference from the last time diff was called.\n\t3. " \
+                         "//update_steam_item add an item from steam market, and you will be informed of when that " \
+                         "limit is reached\n\t4. //remove_steam_item remove steam market listings\n\t5. " \
+                         "//list_watchdog list items in steam watchdog.\n\t6. //add_sp_alias to add an alias to " \
+                         "spotify username/id this helps in identify them if they add a track to the " \
+                         "playlist.\n\nPlease follow the bots instructions carefully in each step."
+                await send_channel(message.channel, string)
+                return
         except Exception as e:
             channel = client.get_channel(1053933250143326269)
             await send_channel(channel, f"Exception {e} at server {server_id}")
@@ -664,7 +718,7 @@ def run_bot(discord_token):
             channel = client.get_channel(guild.background_task_channel)
 
             string = ""
-            raw_playlist = spotify.get_playlist_tracks(guild.spotify_playlist)
+            raw_playlist = spotify.get_playlist_tracks(guild.spotify_playlist, guild.users)
 
             string += diff_string_plus_minus(raw_playlist, guild.temp_saved_tracks)
 
@@ -711,7 +765,7 @@ def main():
     load_savefile_to_hm()
     for guild_id in guilds:
         guild = guilds[guild_id]
-        raw_playlist = spotify.get_playlist_tracks(guild.spotify_playlist)
+        raw_playlist = spotify.get_playlist_tracks(guild.spotify_playlist, guild.users)
         guild.temp_saved_tracks = raw_playlist
 
     run_bot(discord_token)
