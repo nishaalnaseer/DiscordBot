@@ -63,7 +63,19 @@ def load_savefile_to_hm():
 
 
 async def send_channel(channel, string):
-    await channel.send(f"```{string}```")
+    lines = string.split("\n")
+
+    if len(string) <= 4000:
+        await channel.send(f"```{string}```")
+        return
+
+    piece = ""
+    for line in lines:
+        if len(piece + line) >= 4000:
+            await channel.send(f"```{piece}```")
+            piece = ""
+        else:
+            piece += line + "\n"
 
 
 def save_hm_to_file():
@@ -150,13 +162,13 @@ async def ask_spotify_playlist(server_id, message):
         parsed = urlparse(url)
         path = parsed.path
         playlist_id = path[10:]
-        name = spotify.sp.playlist(playlist_id="2FjwKUf69Fi67jED87dIMN")["name"]
-        playlist = spotify.get_playlist_tracks(playlist_id)
+        name = spotify.sp.playlist(playlist_id)["name"]
+        playlist = spotify.get_playlist_tracks(playlist_id, guild.users)
     except spotipy.exceptions.SpotifyException as e:
         await send_channel(message.channel, "Incorrect playlist url")
         guild.at_task = False
         return
-    except Exception:
+    except Exception as e:
         await send_channel(message.channel, "If you have entered the correct url contact bot admin, else enter the "
                                             "correct url")
         guild.at_task = False
@@ -191,6 +203,9 @@ async def ask_spotify_playlist(server_id, message):
 
     if str(guild.at_task_message.content) == "//yes":
         guild.spotify_playlist = playlist_id
+        tracks = spotify.get_playlist_tracks(playlist_id, guild.users)
+        guild.saved_tracks = tracks
+        guild.temp_saved_tracks = tracks
         save_file = True
         await send_channel(message.channel, "Your preferences have been saved!")
     else:
@@ -577,15 +592,19 @@ async def watchdog(client):
             details = listings[url]
             app_id = details[0]
             limit = details[1]
-            hash_name = details[3]
-            sign = details[4]
+            hash_name = details[2]
+            sign = details[3]
 
             api_url = get_api_url(app_id, hash_name)
             current_details = http_get(api_url).json()
             current_price_str = current_details["median_price"]
             current_price: float = float(current_price_str.replace("$", ""))
 
-            conditional = exec(f"{current_price} {sign} {limit}")
+            if sign == ">":
+                conditional = limit > current_price
+            else:
+                conditional = limit < current_price
+
             if conditional:
                 hash_name_formatted = hash_name.replace("%20", "")
                 await send_channel(channel, f"{hash_name_formatted} has reached {current_price_str}")
@@ -736,7 +755,7 @@ def run_bot(discord_token):
 
     @tasks.loop(seconds=3600)
     async def hourly_task():
-        pass
+        await watchdog(client)
 
     @my_background_task.before_loop
     @hourly_task.before_loop
