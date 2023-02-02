@@ -606,7 +606,7 @@ async def watchdog(client):
                 conditional = limit < current_price
 
             if conditional:
-                hash_name_formatted = hash_name.replace("%20", "")
+                hash_name_formatted = hash_name.replace("%20", " ")
                 await send_channel(channel, f"{hash_name_formatted} has reached {current_price_str}")
 
 
@@ -650,6 +650,18 @@ async def add_user(server_id, message):
     guild.at_task = False
     await send_channel(message.channel, "Your preferences have been saved")
     return
+
+
+async def send_ip(server_id, message):
+    """function to get external ip through a website and send it to discord server
+    will filter this function to a single server/guild"""
+
+    if server_id != "260459671695917056":
+        return
+
+    raw = http_get('http://ip.42.pl/raw')
+    ip = raw.content.decode()
+    await send_channel(message.channel, ip)
 
 
 def run_bot(discord_token):
@@ -719,6 +731,8 @@ def run_bot(discord_token):
                 await list_watchdog(server_id, message)
             elif arg1 == "//add_sp_alias":
                 await add_user(server_id, message)
+            elif arg1 == "//get_ip":
+                await send_ip(server_id, message)
             elif arg1 == "//help":
                 string = "Functions:\n\t1. //init to setup a background channel for wacthdog and monitoring " \
                          "functions.\n\t2. //set_playlist to setup playlist for monitoring, and if you want you can " \
