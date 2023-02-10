@@ -1,4 +1,6 @@
 import json
+
+from PIL import Image
 from discord.ext import tasks
 import discord
 import spotipy
@@ -7,11 +9,14 @@ import time
 from threading import Thread
 from urllib.parse import urlparse
 from requests import get as http_get
+import matplotlib.pyplot as plt
+import pandas as pd
+from pandas.plotting import table
 
 from guild import Guild
 import spotify
 
-version = 0.2
+version = 0.3
 
 
 def diff_string(playlist_a: dict, playlist_b: dict, char: str) -> str:
@@ -664,6 +669,46 @@ async def send_ip(server_id, message):
     await send_channel(message.channel, ip)
 
 
+async def timetable(client):
+    global g_drive_string
+    channel = client.get_channel(1053899634256388147)
+
+    sheet_url = "https://docs.google.com/spreadsheets/d/10tOeHC-oaJsTceuudh1fr7UiuiIUqmIh/edit#gid=1018702707"
+    url_1 = sheet_url.replace('/edit#gid=', '/export?format=csv&gid=')
+    cols = [x for x in range(9, 16)]
+    file = pd.read_csv(url_1, usecols=cols).fillna("")
+    content = file[21:31]
+    content.fillna("")
+    header = file.iloc[20, :].values.flatten().tolist()
+    content.columns = header
+    content.index = [x for x in range(10)]
+    string = content.to_string().replace("    ", "\t")
+
+    if string != g_drive_string:
+        # content.to_excel("timetable.xlsx")
+        g_drive_string = string
+
+        with open("gdrive.txt", 'w') as f:
+            f.write(string)
+
+        ax = plt.subplot(911, frame_on=False)  # no visible frame
+        ax.xaxis.set_visible(False)  # hide the x axis
+        ax.yaxis.set_visible(False)  # hide the y axis
+        table(ax, content)  # where df is your data frame
+
+        plt.savefig('mytable.png', dpi=500)
+
+        left, top, right, bottom = 401, 462, 2876, 1377
+
+        img = Image.open("mytable.png")
+        img_res = img.crop((left, top, right, bottom))
+        img.close()
+
+        img_res.save("mytable.png")
+
+        await channel.send(files=[discord.File("mytable.png")])
+
+
 def run_bot(discord_token):
     """main function of dicord.py"""
     client = discord.Client(intents=discord.Intents.all())
@@ -676,6 +721,9 @@ def run_bot(discord_token):
 
         content = message.content
         author = message.author
+
+        if content.startswith("hello"):
+            print("ok")
 
         channel = message.channel
         print(f"{author} said {content} on {channel}")
@@ -733,6 +781,8 @@ def run_bot(discord_token):
                 await add_user(server_id, message)
             elif arg1 == "//get_ip":
                 await send_ip(server_id, message)
+            elif arg1 == "//timetable":
+                await timetable(client)
             elif arg1 == "//help":
                 string = "Functions:\n\t1. //init to setup a background channel for wacthdog and monitoring " \
                          "functions.\n\t2. //set_playlist to setup playlist for monitoring, and if you want you can " \
@@ -767,6 +817,10 @@ def run_bot(discord_token):
             guild.temp_saved_tracks = raw_playlist
             await send_channel(channel, string)
 
+    @tasks.loop(seconds=900)
+    async def four_time_an_hour():
+        await timetable(client)
+
     @tasks.loop(seconds=3600)
     async def hourly_task():
         await watchdog(client)
@@ -780,6 +834,7 @@ def run_bot(discord_token):
     async def on_ready():
         my_background_task.start()  # start the task to run in the background
         hourly_task.start()
+        four_time_an_hour.start()
 
         print(f'Logged in as {client.user}')
         print('------')
@@ -814,6 +869,8 @@ if __name__ == '__main__':
     # global vars
     guilds = {}
     save_file = False
+    with open("gdrive.txt", 'r') as f:
+        g_drive_string = f.read()
     spotify = spotify.Spotify()
 
     main()
