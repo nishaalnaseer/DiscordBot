@@ -147,9 +147,12 @@ async def message_event_loop(server_id, message):
             return False
 
 
-async def ask_spotify_playlist(server_id, message):
+async def ask_spotify_playlist(**kwargs):
     """conversation where the bot asks for the spotify playlist url, verifies it and saves it to disk"""
     global save_file
+    server_id = kwargs["server_id"]
+    message = kwargs["message"]
+
     guild = guilds[server_id]
     guild.at_task = True
     guild.at_task_message = ""
@@ -220,11 +223,12 @@ async def ask_spotify_playlist(server_id, message):
     return
 
 
-async def init(message):
+async def init(**kwargs):
     """conversation between the bot and a user where the bot asks to confirm if current dicord
     channel is the channel for background tasks, this is where steam watchdog and spotify monitor
      function will reply to"""
     global guilds, save_file
+    message = kwargs["message"]
     server_id = str(message.guild.id)
     guild = guilds[server_id]
     guild.at_task = True
@@ -313,9 +317,11 @@ async def admin_interface(message):
         await send_channel(message.channel, e)
 
 
-async def diff(server_id, message):
+async def diff(**kwargs):
     """send the difference between saved track and current playlist"""
     global save_file
+    server_id = kwargs["server_id"]
+    message = kwargs["message"]
 
     guild = guilds[server_id]
 
@@ -343,9 +349,11 @@ def get_api_url(appid, hash_name):
     return url
 
 
-async def update_steam(server_id, message):
+async def update_steam(**kwargs):
     """conversation between useer and bot where the user adds or updates item in steam watch dog"""
     global save_file
+    server_id = kwargs["server_id"]
+    message = kwargs["message"]
 
     guild = guilds[server_id]
     guild.at_task = True
@@ -513,9 +521,11 @@ async def set_watchdog_limit(message):
     await send_channel(message.channel, "Limit changed")
 
 
-async def remove_steam(server_id, message):
+async def remove_steam(**kwargs):
     """removes steam item takes url as an additional argument"""
     global save_file
+    server_id = kwargs["server_id"]
+    message = kwargs["message"]
 
     guild = guilds[server_id]
 
@@ -558,9 +568,12 @@ async def remove_steam(server_id, message):
     return
 
 
-async def list_watchdog(server_id, message):
+async def list_watchdog(**kwargs):
     """returns a list of the listings currently in steam watchdog"""
+    server_id = kwargs["server_id"]
+    message = kwargs["message"]
     guild = guilds[server_id]
+
     string = ""
     for item in guild.steam_market_watchdog:
         item_details = guild.steam_market_watchdog[item]
@@ -615,10 +628,12 @@ async def watchdog(client):
                 await send_channel(channel, f"{hash_name_formatted} has reached {current_price_str}")
 
 
-async def add_user(server_id, message):
+async def add_user(**kwargs):
     """a conversation where users add user ids to the bot, this helps in showing a known alias when returning
     differences in spotify playlists"""
     global save_file
+    server_id = kwargs["server_id"]
+    message = kwargs["message"]
 
     guild = guilds[server_id]
     guild.at_task = True
@@ -657,9 +672,12 @@ async def add_user(server_id, message):
     return
 
 
-async def send_ip(server_id, message):
+async def send_ip(**kwargs):
     """function to get external ip through a website and send it to discord server
     will filter this function to a single server/guild"""
+
+    server_id = kwargs["server_id"]
+    message = kwargs["message"]
 
     if server_id != "260459671695917056":
         return
@@ -669,8 +687,10 @@ async def send_ip(server_id, message):
     await send_channel(message.channel, ip)
 
 
-async def timetable(client):
+async def timetable(**kwargs):
     global g_drive_string
+    client = kwargs["client"]
+
     channel = client.get_channel(1053899634256388147)
 
     sheet_url = "https://docs.google.com/spreadsheets/d/10tOeHC-oaJsTceuudh1fr7UiuiIUqmIh/edit#gid=1018702707"
@@ -708,11 +728,36 @@ async def timetable(client):
 
         await channel.send(files=[discord.File("mytable.png")])
 
+async def help(**kwargs):
+    message = kwargs["message"]
+    string = "Functions:\n\t1. //init to setup a background channel for wacthdog and monitoring " \
+             "functions.\n\t2. //set_playlist to setup playlist for monitoring, and if you want you can " \
+             "call diff to show the difference from the last time diff was called.\n\t3. " \
+             "//update_steam_item add an item from steam market, and you will be informed of when that " \
+             "limit is reached\n\t4. //remove_steam_item remove steam market listings\n\t5. " \
+             "//list_watchdog list items in steam watchdog.\n\t6. //add_sp_alias to add an alias to " \
+             "spotify username/id this helps in identify them if they add a track to the " \
+             "playlist.\n\nPlease follow the bots instructions carefully in each step."
+    await send_channel(message.channel, string)
+    return
+
 
 def run_bot(discord_token):
     """main function of dicord.py"""
     client = discord.Client(intents=discord.Intents.all())
     global guilds
+
+    functions = {
+        "//init": init,
+        "//set_playlist": ask_spotify_playlist,
+        "//diff": diff,
+        "//update_steam_item": update_steam,
+        "//remove_steam_item": remove_steam,
+        "//list_watchdog": list_watchdog,
+        "//add_sp_alias": add_user,
+        "//get_ip": send_ip,
+        "//timetable": timetable,
+    }
 
     @client.event
     async def on_message(message):
@@ -765,35 +810,8 @@ def run_bot(discord_token):
 
         arg1 = args[0]
         try:
-            if arg1 == "//init":
-                await init(message)
-            elif arg1 == "//set_playlist":
-                await ask_spotify_playlist(server_id, message)
-            elif arg1 == "//diff":
-                await diff(server_id, message)
-            elif arg1 == "//update_steam_item":
-                await update_steam(server_id, message)
-            elif arg1 == "//remove_steam_item":
-                await remove_steam(server_id, message)
-            elif arg1 == "//list_watchdog":
-                await list_watchdog(server_id, message)
-            elif arg1 == "//add_sp_alias":
-                await add_user(server_id, message)
-            elif arg1 == "//get_ip":
-                await send_ip(server_id, message)
-            elif arg1 == "//timetable":
-                await timetable(client)
-            elif arg1 == "//help":
-                string = "Functions:\n\t1. //init to setup a background channel for wacthdog and monitoring " \
-                         "functions.\n\t2. //set_playlist to setup playlist for monitoring, and if you want you can " \
-                         "call diff to show the difference from the last time diff was called.\n\t3. " \
-                         "//update_steam_item add an item from steam market, and you will be informed of when that " \
-                         "limit is reached\n\t4. //remove_steam_item remove steam market listings\n\t5. " \
-                         "//list_watchdog list items in steam watchdog.\n\t6. //add_sp_alias to add an alias to " \
-                         "spotify username/id this helps in identify them if they add a track to the " \
-                         "playlist.\n\nPlease follow the bots instructions carefully in each step."
-                await send_channel(message.channel, string)
-                return
+            function = functions[arg1]
+            function(server_id=server_id, message=message, client=client)
         except Exception as e:
             channel = client.get_channel(1053933250143326269)
             await send_channel(channel, f"Exception {e} at server {server_id}")
@@ -819,7 +837,12 @@ def run_bot(discord_token):
 
     @tasks.loop(seconds=900)
     async def four_time_an_hour():
-        await timetable(client)
+        await timetable(client=client)
+
+        temp = http_get('http://ip.42.pl/raw').content.decode()
+        if temp != ip:
+            channel = client.get_channel(1053899634256388147)
+            await channel.send(f"IP update, IP has changed to: {temp}")
 
     @tasks.loop(seconds=3600)
     async def hourly_task():
@@ -869,6 +892,7 @@ if __name__ == '__main__':
     # global vars
     guilds = {}
     save_file = False
+    ip = http_get('http://ip.42.pl/raw').content.decode()
     with open("gdrive.txt", 'r') as f:
         g_drive_string = f.read()
     spotify = spotify.Spotify()
