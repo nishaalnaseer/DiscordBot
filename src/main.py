@@ -687,6 +687,13 @@ async def send_ip(**kwargs):
     await send_channel(message.channel, ip)
 
 
+async def check_ip(channel_id, client):
+    temp = http_get('http://ip.42.pl/raw').content.decode()
+    if temp != ip:
+        channel = client.get_channel(channel_id)
+        await channel.send(f"IP update, IP has changed to: {temp}")
+
+
 async def timetable(**kwargs):
     global g_drive_string
     client = kwargs["client"]
@@ -745,7 +752,7 @@ async def help(**kwargs):
 def run_bot(discord_token):
     """main function of dicord.py"""
     client = discord.Client(intents=discord.Intents.all())
-    global guilds
+    global guilds, administration_channel
 
     functions = {
         "//init": init,
@@ -838,11 +845,7 @@ def run_bot(discord_token):
     @tasks.loop(seconds=900)
     async def four_time_an_hour():
         await timetable(client=client)
-
-        temp = http_get('http://ip.42.pl/raw').content.decode()
-        if temp != ip:
-            channel = client.get_channel(1053899634256388147)
-            await channel.send(f"IP update, IP has changed to: {temp}")
+        await check_ip(administration_channel, client)
 
     @tasks.loop(seconds=3600)
     async def hourly_task():
@@ -866,12 +869,13 @@ def run_bot(discord_token):
 
 
 def main():
-    global guilds
+    global guilds, administration_channel
     with open("config.json", 'r') as f:
         config = json.load(f)
 
     thread = Thread(target=save_hm_to_file)
     thread.start()
+    administration_channel = config["administration_channel"]
 
     dev = config["dev"]
     if dev:
@@ -893,6 +897,8 @@ if __name__ == '__main__':
     guilds = {}
     save_file = False
     ip = http_get('http://ip.42.pl/raw').content.decode()
+    administration_channel = 0
+
     with open("gdrive.txt", 'r') as f:
         g_drive_string = f.read()
     spotify = spotify.Spotify()
