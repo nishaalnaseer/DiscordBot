@@ -1,5 +1,5 @@
+import os
 import json
-
 from PIL import Image
 from discord.ext import tasks
 import discord
@@ -13,8 +13,10 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from pandas.plotting import table
 
-from guild import Guild
-import spotify
+os.chdir("src/")  # because this file is meant to be run from the root dir
+
+from src.guild import Guild
+import src.spotify as spotify
 
 version = 0.3
 
@@ -698,7 +700,7 @@ async def timetable(**kwargs):
     global g_drive_string
     client = kwargs["client"]
 
-    channel = client.get_channel(1053899634256388147)
+    channel = client.get_channel(administration_channel)
 
     sheet_url = "https://docs.google.com/spreadsheets/d/10tOeHC-oaJsTceuudh1fr7UiuiIUqmIh/edit#gid=1018702707"
     url_1 = sheet_url.replace('/edit#gid=', '/export?format=csv&gid=')
@@ -892,15 +894,12 @@ def main():
     run_bot(discord_token)
 
 
-if __name__ == '__main__':
-    # global vars
-    guilds = {}
-    save_file = False
-    ip = http_get('http://ip.42.pl/raw').content.decode()
-    administration_channel = 0
+# global vars
+guilds = {}
+save_file = False
+ip = http_get('http://ip.42.pl/raw').content.decode()
+administration_channel = 0
 
-    with open("gdrive.txt", 'r') as f:
-        g_drive_string = f.read()
-    spotify = spotify.Spotify()
-
-    main()
+with open("gdrive.txt", 'r') as f:
+    g_drive_string = f.read()
+spotify = spotify.Spotify()
