@@ -820,7 +820,7 @@ def run_bot(discord_token):
         arg1 = args[0]
         try:
             function = functions[arg1]
-            function(server_id=server_id, message=message, client=client)
+            await function(server_id=server_id, message=message, client=client)
         except Exception as e:
             channel = client.get_channel(1053933250143326269)
             await send_channel(channel, f"Exception {e} at server {server_id}")
