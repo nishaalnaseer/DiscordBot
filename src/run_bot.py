@@ -700,6 +700,15 @@ async def timetable(**kwargs):
     global g_drive_string
     client = kwargs["client"]
 
+    try:
+        flag = True
+        message = kwargs["message"]
+    except KeyError:
+        flag = False
+    else:
+        if message.author.id != config["admin_id"]:
+            return
+
     channel = client.get_channel(administration_channel)
 
     sheet_url = "https://docs.google.com/spreadsheets/d/10tOeHC-oaJsTceuudh1fr7UiuiIUqmIh/edit#gid=1018702707"
@@ -713,29 +722,33 @@ async def timetable(**kwargs):
     content.index = [x for x in range(10)]
     string = content.to_string().replace("    ", "\t")
 
-    if string != g_drive_string:
-        # content.to_excel("timetable.xlsx")
-        g_drive_string = string
+    if string == g_drive_string and flag:
+        pass
+    if string == g_drive_string and not flag:
+        return
 
-        with open("gdrive.txt", 'w') as f:
-            f.write(string)
+    # content.to_excel("timetable.xlsx")
+    g_drive_string = string
 
-        ax = plt.subplot(911, frame_on=False)  # no visible frame
-        ax.xaxis.set_visible(False)  # hide the x axis
-        ax.yaxis.set_visible(False)  # hide the y axis
-        table(ax, content)  # where df is your data frame
+    with open("gdrive.txt", 'w') as f:
+        f.write(string)
 
-        plt.savefig('mytable.png', dpi=500)
+    ax = plt.subplot(911, frame_on=False)  # no visible frame
+    ax.xaxis.set_visible(False)  # hide the x axis
+    ax.yaxis.set_visible(False)  # hide the y axis
+    table(ax, content)  # where df is your data frame
 
-        left, top, right, bottom = 401, 462, 2876, 1377
+    plt.savefig('mytable.png', dpi=500)
 
-        img = Image.open("mytable.png")
-        img_res = img.crop((left, top, right, bottom))
-        img.close()
+    left, top, right, bottom = 401, 462, 2876, 1377
 
-        img_res.save("mytable.png")
+    img = Image.open("mytable.png")
+    img_res = img.crop((left, top, right, bottom))
+    img.close()
 
-        await channel.send(files=[discord.File("mytable.png")])
+    img_res.save("mytable.png")
+
+    await channel.send(files=[discord.File("mytable.png")])
 
 async def help(**kwargs):
     message = kwargs["message"]
@@ -821,9 +834,8 @@ def run_bot(discord_token):
         try:
             function = functions[arg1]
             await function(server_id=server_id, message=message, client=client)
-        except Exception as e:
-            channel = client.get_channel(1053933250143326269)
-            await send_channel(channel, f"Exception {e} at server {server_id}")
+        except KeyError:
+            return
 
         return
 
@@ -872,8 +884,6 @@ def run_bot(discord_token):
 
 def main():
     global guilds, administration_channel
-    with open("config.json", 'r') as f:
-        config = json.load(f)
 
     thread = Thread(target=save_hm_to_file)
     thread.start()
@@ -902,4 +912,8 @@ administration_channel = 0
 
 with open("gdrive.txt", 'r') as f:
     g_drive_string = f.read()
+
+with open("config.json", 'r') as f:
+    config = json.load(f)
+
 spotify = spotify.Spotify()
